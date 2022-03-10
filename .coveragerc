@@ -1,0 +1,14 @@
+# .coveragerc to control coverage.py
+[run]
+source = vae_simple
+branch = true
+parallel = true
+
+[paths]
+source =
+    src/vae_simple
+    **/site-packages/vae_simple
+
+[report]
+show_missing = true
+skip_covered = true

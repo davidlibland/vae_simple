@@ -1,0 +1,19 @@
+{
+  "cookiecutter": {
+    "_copy_without_render": [
+        "*.csv",
+        "*.png",
+        "*.svg"
+    ],
+    "_template": "git@github.com:unlearnai/pbp_template.git",
+    "author": "David Li-Bland",
+    "author_email": "david.libland@gmail.com",
+    "description": "This repo contains a demo of a variational autoencoder",
+    "name": "davidlibland/vae_simple",
+    "package": "vae_simple",
+    "project_slug": "vae_simple",
+    "project_url": "https://github.com/davidlibland/vae_simple",
+    "short_name": "vae_simple",
+    "upstream_org": "davidlibland"
+}
+}
