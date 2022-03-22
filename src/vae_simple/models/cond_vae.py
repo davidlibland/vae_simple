@@ -103,7 +103,14 @@ class CVAE(pl.LightningModule):
         x = x.view(batch_size, -1)
         p = dist.Normal(*self.encoder(x))
         hidden = p.rsample()
-        return self.decoder(hidden)
+        reconstruction = self.visible_distribution(*self.decoder(hidden))
+        return reconstruction.mean
+
+    def sample(self, y):
+        q = dist.Normal(*self.conditioner(y))
+        hidden = q.sample()
+        reconstruction = self.visible_distribution(*self.decoder(hidden))
+        return reconstruction.mean
 
     def scale_image(self, img):
         out = (img + 1) / 2
@@ -119,4 +126,18 @@ class CVAE(pl.LightningModule):
         )  # Reshape tensor to stack the images nicely
         save_image(
             output_sample, f"vae_images/epoch_{self.current_epoch+1}.png"
+        )
+
+        output_labels = torch.tensor(random.choices(range(10), k=64))
+        self.eval()
+        with torch.no_grad():
+            # compute stuff here
+            output_sample = self.sample(output_labels).reshape(
+                -1, 1, 28, 28
+            )  # Reshape tensor to stack the images nicely
+        self.train()
+
+        output_sample = self.scale_image(output_sample)
+        save_image(
+            output_sample, f"vae_images/samples_{self.current_epoch+1}.png"
         )

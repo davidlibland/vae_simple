@@ -132,6 +132,7 @@ def train(dataset, cond, n_epochs, batch_size, hidden_size):
             encoder=encoder,
             decoder=decoder,
             visible_distribution=dist.Normal,
+            hidden_dim=hidden_size,
             **hyper_params,
         )
 

@@ -11,7 +11,13 @@ from torchvision.utils import save_image
 
 class VAE(pl.LightningModule):
     def __init__(
-        self, encoder, decoder, visible_distribution, alpha=1, lr=0.05
+        self,
+        encoder,
+        decoder,
+        visible_distribution,
+        hidden_dim,
+        alpha=1,
+        lr=0.05,
     ):
         # Autoencoder only requires 1 dimensional argument since input and output-size is the same
         super().__init__()
@@ -22,6 +28,8 @@ class VAE(pl.LightningModule):
 
         self.encoder = encoder
         self.decoder = decoder
+
+        self.hidden_dim = hidden_dim
 
     def configure_optimizers(self):
         return Adam(self.parameters(), lr=1e-3)
@@ -80,7 +88,13 @@ class VAE(pl.LightningModule):
         x = x.view(batch_size, -1)
         p = dist.Normal(*self.encoder(x))
         hidden = p.rsample()
-        return self.decoder(hidden)
+        reconstruction = self.visible_distribution(*self.decoder(hidden))
+        return reconstruction.mean
+
+    def sample(self, n):
+        hidden = dist.Normal(0, 1).sample((n, self.hidden_dim))
+        reconstruction = self.visible_distribution(*self.decoder(hidden))
+        return reconstruction.mean
 
     def scale_image(self, img):
         out = (img + 1) / 2
@@ -97,4 +111,15 @@ class VAE(pl.LightningModule):
         output_sample = self.scale_image(output_sample)
         save_image(
             output_sample, f"vae_images/epoch_{self.current_epoch+1}.png"
+        )
+
+        self.eval()
+        with torch.no_grad():
+            output_sample = self.sample(64).reshape(
+                -1, 1, 28, 28
+            )  # Reshape tensor to stack the images nicely
+        self.train()
+        output_sample = self.scale_image(output_sample)
+        save_image(
+            output_sample, f"vae_images/samples_{self.current_epoch+1}.png"
         )
