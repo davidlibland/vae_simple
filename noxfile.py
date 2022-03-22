@@ -31,7 +31,7 @@ PACKAGE = "vae_simple"
 
 SOURCE_PATHS = "src", "test", "noxfile.py"
 REQUIREMENT_PATH = "requirements-dev.txt"
-RENAME = {"tables": "pytables"}
+RENAME = {"torch": "pytorch"}
 ALWAYS_USE_PIP = [
     "pylint-junit",
     # TODO place any pip-only dependencies here and remove the following
