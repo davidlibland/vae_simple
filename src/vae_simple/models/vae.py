@@ -1,12 +1,9 @@
-import os
 import random
 
 import pytorch_lightning as pl
 import torch
 import torch.distributions as dist
-import torch.nn as nn
 from torch.optim import Adam
-from torchvision.utils import save_image
 
 
 class VAE(pl.LightningModule):
@@ -16,6 +13,8 @@ class VAE(pl.LightningModule):
         decoder,
         visible_distribution,
         hidden_dim,
+        plot_samples=None,
+        plot_reconstructions=None,
         alpha=1,
         lr=0.05,
     ):
@@ -30,6 +29,8 @@ class VAE(pl.LightningModule):
         self.decoder = decoder
 
         self.hidden_dim = hidden_dim
+        self.plot_samples = plot_samples
+        self.plot_reconstructions = plot_reconstructions
 
     def configure_optimizers(self):
         return Adam(self.parameters(), lr=1e-3)
@@ -50,9 +51,7 @@ class VAE(pl.LightningModule):
         return x_out, loss
 
     def _loss_and_output_step(self, batch):
-        x, _ = batch
-        batch_size = x.size(0)
-        x = x.view(batch_size, -1)
+        x = batch
         # Encode the data
         mu, var = self.encoder(x)
         p = dist.Normal(mu, var)
@@ -70,11 +69,7 @@ class VAE(pl.LightningModule):
         reconstruction = self.visible_distribution(*self.decoder(hidden))
 
         # Compute the reconstruction loss:
-        recon_loss = (
-            -reconstruction.log_prob(x.view(x.size(0), 1, 28, 28))
-            .mean(dim=0)
-            .sum()
-        )
+        recon_loss = -reconstruction.log_prob(x).mean(dim=0).sum()
 
         # This is the total loss:
         loss = recon_loss * self.alpha + kl_loss
@@ -96,30 +91,11 @@ class VAE(pl.LightningModule):
         reconstruction = self.visible_distribution(*self.decoder(hidden))
         return reconstruction.mean
 
-    def scale_image(self, img):
-        out = (img + 1) / 2
-        return out
-
     def validation_epoch_end(self, outputs):
-        if not os.path.exists("vae_images"):
-            os.makedirs("vae_images")
         choice = random.choice(outputs)  # Choose a random batch from outputs
         output_sample = choice[0]  # Take the recreated image
-        output_sample = output_sample.reshape(
-            -1, 1, 28, 28
-        )  # Reshape tensor to stack the images nicely
-        output_sample = self.scale_image(output_sample)
-        save_image(
-            output_sample, f"vae_images/epoch_{self.current_epoch+1}.png"
-        )
-
-        self.eval()
-        with torch.no_grad():
-            output_sample = self.sample(64).reshape(
-                -1, 1, 28, 28
-            )  # Reshape tensor to stack the images nicely
-        self.train()
-        output_sample = self.scale_image(output_sample)
-        save_image(
-            output_sample, f"vae_images/samples_{self.current_epoch+1}.png"
-        )
+        epoch = self.current_epoch + 1
+        if self.plot_reconstructions:
+            self.plot_reconstructions(output_sample, epoch)
+        if self.plot_samples:
+            self.plot_samples(self, epoch)

@@ -1,3 +1,6 @@
+import os
+import random
+
 import click
 import torch
 import torch.distributions as dist
@@ -6,8 +9,33 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from models import CVAE, VAE
 from pytorch_lightning import Trainer
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from torchvision.datasets import MNIST, FashionMNIST
+from torchvision.utils import save_image
+
+
+class SwapXY(Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        x, y = self.dataset[idx]
+        return y, x
+
+
+class JustX(Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        x, _ = self.dataset[idx]
+        return x
 
 
 class Flatten(nn.Module):
@@ -86,6 +114,21 @@ class Decoder(nn.Module):
         return mu, torch.ones_like(mu)
 
 
+def scale_image(img):
+    out = (img + 1) / 2
+    return out
+
+
+def plot_reconstructions(output_sample, epoch):
+    if not os.path.exists("vae_images"):
+        os.makedirs("vae_images")
+    output_sample = output_sample.reshape(
+        -1, 1, 28, 28
+    )  # Reshape tensor to stack the images nicely
+    output_sample = scale_image(output_sample)
+    save_image(output_sample, f"vae_images/epoch_{epoch+1}.png")
+
+
 @click.command()
 @click.argument("dataset", type=str, default="MNIST")
 @click.option("--cond/--not-cond")
@@ -107,11 +150,9 @@ def train(dataset, cond, n_epochs, batch_size, hidden_size):
     train_set = dataset_klass(
         "data/", download=True, train=True, transform=data_transform
     )
-    train_loader = DataLoader(train_set, batch_size=batch_size)
     val_set = dataset_klass(
         "data/", download=True, train=False, transform=data_transform
     )
-    val_loader = DataLoader(val_set, batch_size=batch_size)
 
     hyper_params = {"alpha": 1, "lr": 0.005}
 
@@ -120,21 +161,56 @@ def train(dataset, cond, n_epochs, batch_size, hidden_size):
     conditioner = Cond(hidden_size)
 
     if cond:
+
+        def plot_samples(model, epoch):
+            output_labels = torch.tensor(random.choices(range(10), k=64))
+            model.eval()
+            with torch.no_grad():
+                # compute stuff here
+                output_sample = model.sample(output_labels).reshape(
+                    -1, 1, 28, 28
+                )  # Reshape tensor to stack the images nicely
+            model.train()
+
+            output_sample = scale_image(output_sample)
+            save_image(output_sample, f"vae_images/samples_{epoch + 1}.png")
+
         model = CVAE(
             encoder=encoder,
             decoder=decoder,
             conditioner=conditioner,
             visible_distribution=dist.Normal,
+            plot_reconstructions=plot_reconstructions,
+            plot_samples=plot_samples,
             **hyper_params,
         )
+        train_loader = DataLoader(SwapXY(train_set), batch_size=batch_size)
+        val_loader = DataLoader(SwapXY(val_set), batch_size=batch_size)
     else:
+
+        def plot_samples(model, epoch):
+            model.eval()
+            with torch.no_grad():
+                # compute stuff here
+                output_sample = model.sample(64).reshape(
+                    -1, 1, 28, 28
+                )  # Reshape tensor to stack the images nicely
+            model.train()
+
+            output_sample = scale_image(output_sample)
+            save_image(output_sample, f"vae_images/samples_{epoch + 1}.png")
+
         model = VAE(
             encoder=encoder,
             decoder=decoder,
             visible_distribution=dist.Normal,
             hidden_dim=hidden_size,
+            plot_reconstructions=plot_reconstructions,
+            plot_samples=plot_samples,
             **hyper_params,
         )
+        train_loader = DataLoader(JustX(train_set), batch_size=batch_size)
+        val_loader = DataLoader(JustX(val_set), batch_size=batch_size)
 
     # Initializing Trainer and setting parameters
     trainer = Trainer(gpus=0, auto_lr_find=True, max_epochs=n_epochs)
