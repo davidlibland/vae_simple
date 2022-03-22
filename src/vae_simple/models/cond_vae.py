@@ -1,74 +1,42 @@
 import os
 import random
-import pytorch_lightning as pl
-from torch.optim import Adam
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.distributions as dist
+from typing import Type
 
+import pytorch_lightning as pl
+import torch
+import torch.distributions as dist
+import torch.nn as nn
+from torch.optim import Adam
 from torchvision.utils import save_image
 
 
-class Flatten(nn.Module):
-    def forward(self, x):
-        return x.view(x.size(0), -1)
-
-
-class Stack(nn.Module):
-    def __init__(self, channels, height, width):
-        super(Stack, self).__init__()
-        self.channels = channels
-        self.height = height
-        self.width = width
-
-    def forward(self, x):
-        return x.view(x.size(0), self.channels, self.height, self.width)
-
-
 class CVAE(pl.LightningModule):
-    def __init__(self, alpha=1, lr=1e-3, hidden_size=28):
-        # Autoencoder only requires 1 dimensional argument since input and output-size is the same
+    def __init__(
+        self,
+        encoder: nn.Module,
+        decoder: nn.Module,
+        conditioner: nn.Module,
+        visible_distribution: Type[dist.Distribution],
+        alpha=1,
+        lr=1e-3,
+    ):
+        """
+        The encoder and conditioner should both output tuples mu, std
+        describing a latent mean and standard deviation, of the same shape.
+
+        The decoder should output a tuple of parameters for the visible distribution.
+
+        The visible distribution will be applied to data to compute the log loss.
+        """
         super().__init__()
-        self.hidden_size = hidden_size
-        self.encoder = nn.Sequential(
-            Flatten(),
-            nn.Linear(784, 392),
-            nn.BatchNorm1d(392),
-            nn.LeakyReLU(0.1),
-            nn.Linear(392, 196),
-            nn.BatchNorm1d(196),
-            nn.LeakyReLU(0.1),
-            nn.Linear(196, 128),
-            nn.BatchNorm1d(128),
-            nn.LeakyReLU(0.1),
-            nn.Linear(128, hidden_size),
-        )
-        self.hidden2mu = nn.Linear(hidden_size, hidden_size)
-        self.hidden2log_var = nn.Linear(hidden_size, hidden_size)
         self.lr = lr
-
-        self.hiddenc2mu = nn.Linear(10, hidden_size)
-
-        self.hidden2mu = nn.Linear(hidden_size, hidden_size)
-        self.hidden2log_var = nn.Linear(hidden_size, hidden_size)
         self.alpha = alpha
-        self.decoder = nn.Sequential(
-            nn.Linear(hidden_size, 128),
-            nn.BatchNorm1d(128),
-            nn.LeakyReLU(0.1),
-            nn.Linear(128, 196),
-            nn.BatchNorm1d(196),
-            nn.LeakyReLU(0.1),
-            nn.Linear(196, 392),
-            nn.BatchNorm1d(392),
-            nn.LeakyReLU(0.1),
-            nn.Linear(392, 784),
-            Stack(1, 28, 28),
-            nn.Tanh(),
-        )
 
-        self.recon_loss_criterion = nn.MSELoss()
+        self.visible_distribution = visible_distribution
+
+        self.encoder = encoder
+        self.decoder = decoder
+        self.conditioner = conditioner
 
     def configure_optimizers(self):
         return Adam(self.parameters(), lr=(self.lr or self.learning_rate))
@@ -88,22 +56,38 @@ class CVAE(pl.LightningModule):
         self.log("val_loss", loss, on_step=True, on_epoch=True)
         return x_out, loss
 
-    def _kl_loss(self, mu0, log_var0, mu1, log_var1):
-        p = dist.Normal(mu0, torch.exp(log_var0 / 2))
-        q = dist.Normal(mu1, torch.exp(log_var1 / 2))
-        return dist.kl.kl_divergence(p, q)
-
     def _loss_and_output_step(self, batch):
         x, y = batch
         batch_size = x.size(0)
         x = x.view(batch_size, -1)
-        mu, log_var = self.encode(x)
-        muc, log_varc = self.condition(y)
-        kl_loss = self._kl_loss(mu, log_var, muc, log_varc).sum(dim=1).mean()
-        hidden = self.reparametrize(mu, log_var)
-        x_out = self.decode(hidden)
-        recon_loss = self.recon_loss_criterion(x, x_out.view(x.size(0), -1))
+        # Encode the data
+        mu, var = self.encoder(x)
+        p = dist.Normal(mu, var)
+        # p is the distribution encoding the data
+
+        # q is the conditional distribution
+        q = dist.Normal(*self.conditioner(y))
+        kl_loss = dist.kl.kl_divergence(p, q).sum(dim=1).mean()
+        # Compute the kl-loss of the two.
+
+        # Use the reparametrization trick to take hidden samples:
+        hidden = p.rsample()
+
+        # Compute the reconstruction:
+        reconstruction = self.visible_distribution(*self.decoder(hidden))
+
+        # Compute the reconstruction loss:
+        recon_loss = (
+            -reconstruction.log_prob(x.view(x.size(0), 1, 28, 28))
+            .mean(dim=0)
+            .sum()
+        )
+
+        # This is the total loss:
         loss = recon_loss * self.alpha + kl_loss
+
+        # Predictions are given by the mean:
+        x_out = reconstruction.mean
         return kl_loss, loss, recon_loss, x_out
 
     def reparametrize(self, mu, log_var):
@@ -114,26 +98,11 @@ class CVAE(pl.LightningModule):
         z = z.type_as(mu)  # Setting z to be .cuda when using GPU training
         return mu + sigma * z
 
-    def encode(self, x):
-        hidden = self.encoder(x)
-        mu = self.hidden2mu(hidden)
-        log_var = self.hidden2log_var(hidden)
-        return mu, log_var
-
-    def condition(self, y):
-        y_one_hot = F.one_hot(y, num_classes=10).float()
-        mu = self.hiddenc2mu(y_one_hot)
-        return mu, torch.zeros_like(mu)
-
-    def decode(self, x):
-        x = self.decoder(x)
-        return x
-
     def forward(self, x):
         batch_size = x.size(0)
         x = x.view(batch_size, -1)
-        mu, log_var = self.encode(x)
-        hidden = self.reparametrize(mu, log_var)
+        p = dist.Normal(*self.encoder(x))
+        hidden = p.rsample()
         return self.decoder(hidden)
 
     def scale_image(self, img):

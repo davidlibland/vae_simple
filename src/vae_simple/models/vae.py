@@ -1,38 +1,27 @@
 import os
 import random
-import pytorch_lightning as pl
-from torch.optim import Adam
-import torch
-import torch.nn as nn
 
+import pytorch_lightning as pl
+import torch
+import torch.distributions as dist
+import torch.nn as nn
+from torch.optim import Adam
 from torchvision.utils import save_image
 
 
 class VAE(pl.LightningModule):
-    def __init__(self, alpha=1):
+    def __init__(
+        self, encoder, decoder, visible_distribution, alpha=1, lr=0.05
+    ):
         # Autoencoder only requires 1 dimensional argument since input and output-size is the same
         super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(784, 196),
-            nn.ReLU(),
-            nn.BatchNorm1d(196, momentum=0.7),
-            nn.Linear(196, 49),
-            nn.ReLU(),
-            nn.BatchNorm1d(49, momentum=0.7),
-            nn.Linear(49, 28),
-            nn.LeakyReLU(),
-        )
-        self.hidden2mu = nn.Linear(28, 28)
-        self.hidden2log_var = nn.Linear(28, 28)
+        self.lr = lr
         self.alpha = alpha
-        self.decoder = nn.Sequential(
-            nn.Linear(28, 49),
-            nn.ReLU(),
-            nn.Linear(49, 196),
-            nn.ReLU(),
-            nn.Linear(196, 784),
-            nn.Tanh(),
-        )
+
+        self.visible_distribution = visible_distribution
+
+        self.encoder = encoder
+        self.decoder = decoder
 
     def configure_optimizers(self):
         return Adam(self.parameters(), lr=1e-3)
@@ -56,40 +45,41 @@ class VAE(pl.LightningModule):
         x, _ = batch
         batch_size = x.size(0)
         x = x.view(batch_size, -1)
-        mu, log_var = self.encode(x)
-        kl_loss = (
-            -0.5 * (1 + log_var - mu**2 - torch.exp(log_var)).sum(dim=1)
-        ).mean(dim=0)
-        hidden = self.reparametrize(mu, log_var)
-        x_out = self.decode(hidden)
-        recon_loss_criterion = nn.MSELoss()
-        recon_loss = recon_loss_criterion(x, x_out)
+        # Encode the data
+        mu, var = self.encoder(x)
+        p = dist.Normal(mu, var)
+        # p is the distribution encoding the data
+
+        # q is the conditional distribution
+        q = dist.Normal(torch.zeros_like(mu), torch.ones_like(mu))
+        kl_loss = dist.kl.kl_divergence(p, q).sum(dim=1).mean()
+        # Compute the kl-loss of the two.
+
+        # Use the reparametrization trick to take hidden samples:
+        hidden = p.rsample()
+
+        # Compute the reconstruction:
+        reconstruction = self.visible_distribution(*self.decoder(hidden))
+
+        # Compute the reconstruction loss:
+        recon_loss = (
+            -reconstruction.log_prob(x.view(x.size(0), 1, 28, 28))
+            .mean(dim=0)
+            .sum()
+        )
+
+        # This is the total loss:
         loss = recon_loss * self.alpha + kl_loss
+
+        # Predictions are given by the mean:
+        x_out = reconstruction.mean
         return kl_loss, loss, recon_loss, x_out
-
-    def reparametrize(self, mu, log_var):
-        # Reparametrization Trick to allow gradients to backpropagate from the
-        # stochastic part of the model
-        sigma = torch.exp(0.5 * log_var)
-        z = torch.randn(size=(mu.size(0), mu.size(1)))
-        z = z.type_as(mu)  # Setting z to be .cuda when using GPU training
-        return mu + sigma * z
-
-    def encode(self, x):
-        hidden = self.encoder(x)
-        mu = self.hidden2mu(hidden)
-        log_var = self.hidden2log_var(hidden)
-        return mu, log_var
-
-    def decode(self, x):
-        x = self.decoder(x)
-        return x
 
     def forward(self, x):
         batch_size = x.size(0)
         x = x.view(batch_size, -1)
-        mu, log_var = self.encode(x)
-        hidden = self.reparametrize(mu, log_var)
+        p = dist.Normal(*self.encoder(x))
+        hidden = p.rsample()
         return self.decoder(hidden)
 
     def scale_image(self, img):
